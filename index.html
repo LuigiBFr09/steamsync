@@ -849,34 +849,52 @@ function extractSteamId(input) {
 
 // CORS proxies — tentados em ordem até um funcionar
 const PROXIES = [
-  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
   url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-  url => `https://thingproxy.freeboard.io/fetch/${url}`,
+  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://proxy.cors.sh/${url}`,
+  url => `https://cors-anywhere.herokuapp.com/${url}`,
 ];
 
 let activeProxyIndex = 0;
 
+function fetchTimeout(url, ms) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), ms);
+  return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(id));
+}
+
 async function fetchWithProxy(targetUrl, attempt = 0) {
   if (attempt >= PROXIES.length) {
     throw new Error(
-      'Todos os proxies CORS falharam (403/erro de rede). ' +
-      'Tente: 1) desativar extensões de bloqueio de anúncios, ' +
-      '2) usar outro navegador, ou 3) hospedar o site num servidor com backend.'
+      'Nao foi possivel conectar a API Steam. Possiveis causas:\n' +
+      '• Chave de API invalida ou expirada\n' +
+      '• Perfil Steam privado\n' +
+      '• Rede/VPN bloqueando proxies CORS\n\n' +
+      'Tente desativar VPN e ad-blockers, ou abra em outro navegador.'
     );
   }
   const proxyUrl = PROXIES[attempt](targetUrl);
+  console.log(`Tentando proxy ${attempt}...`);
   try {
-    const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
-    if (resp.status === 403 || resp.status === 429) {
-      console.warn(`Proxy ${attempt} retornou ${resp.status}, tentando próximo...`);
+    const resp = await fetchTimeout(proxyUrl, 12000);
+    if (resp.status === 403 || resp.status === 429 || resp.status === 503) {
+      console.warn(`Proxy ${attempt} retornou ${resp.status}, tentando proximo...`);
       return fetchWithProxy(targetUrl, attempt + 1);
     }
     if (!resp.ok) throw new Error(`Erro HTTP ${resp.status}`);
-    activeProxyIndex = attempt;
-    return await resp.json();
+    const text = await resp.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error('Resposta invalida do proxy.');
+    }
   } catch (err) {
-    if (err.name === 'AbortError' || err.message.includes('fetch')) {
-      console.warn(`Proxy ${attempt} falhou (${err.message}), tentando próximo...`);
+    if (err.name === 'AbortError') {
+      console.warn(`Proxy ${attempt} timeout, tentando proximo...`);
+      return fetchWithProxy(targetUrl, attempt + 1);
+    }
+    if (err.message.includes('Failed to fetch') || err.message.includes('NetworkError') || err.message.includes('Load failed')) {
+      console.warn(`Proxy ${attempt} erro de rede, tentando proximo...`);
       return fetchWithProxy(targetUrl, attempt + 1);
     }
     throw err;
