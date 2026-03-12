@@ -1,0 +1,6 @@
+{
+  "rewrites": [
+    { "source": "/api/steam", "destination": "/api/steam" },
+    { "source": "/(.*)", "destination": "/public/$1" }
+  ]
+}
