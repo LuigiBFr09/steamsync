@@ -847,19 +847,50 @@ function extractSteamId(input) {
   return null;
 }
 
-// CORS proxy for Steam API (browser can't call Steam API directly)
-const PROXY = 'https://corsproxy.io/?';
+// CORS proxies — tentados em ordem até um funcionar
+const PROXIES = [
+  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => `https://thingproxy.freeboard.io/fetch/${url}`,
+];
+
+let activeProxyIndex = 0;
+
+async function fetchWithProxy(targetUrl, attempt = 0) {
+  if (attempt >= PROXIES.length) {
+    throw new Error(
+      'Todos os proxies CORS falharam (403/erro de rede). ' +
+      'Tente: 1) desativar extensões de bloqueio de anúncios, ' +
+      '2) usar outro navegador, ou 3) hospedar o site num servidor com backend.'
+    );
+  }
+  const proxyUrl = PROXIES[attempt](targetUrl);
+  try {
+    const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
+    if (resp.status === 403 || resp.status === 429) {
+      console.warn(`Proxy ${attempt} retornou ${resp.status}, tentando próximo...`);
+      return fetchWithProxy(targetUrl, attempt + 1);
+    }
+    if (!resp.ok) throw new Error(`Erro HTTP ${resp.status}`);
+    activeProxyIndex = attempt;
+    return await resp.json();
+  } catch (err) {
+    if (err.name === 'AbortError' || err.message.includes('fetch')) {
+      console.warn(`Proxy ${attempt} falhou (${err.message}), tentando próximo...`);
+      return fetchWithProxy(targetUrl, attempt + 1);
+    }
+    throw err;
+  }
+}
 
 async function steamAPI(endpoint, params) {
   const key = document.getElementById('apiKey').value.trim();
-  if (!key) throw new Error('Insira sua chave de API Steam.');
+  if (!key) throw new Error('Insira sua chave de API Steam primeiro.');
   const url = new URL('https://api.steampowered.com/' + endpoint);
   url.searchParams.set('key', key);
   url.searchParams.set('format', 'json');
   for (const [k,v] of Object.entries(params)) url.searchParams.set(k,v);
-  const resp = await fetch(PROXY + encodeURIComponent(url.toString()));
-  if (!resp.ok) throw new Error(`Erro HTTP ${resp.status}`);
-  return await resp.json();
+  return await fetchWithProxy(url.toString(), activeProxyIndex);
 }
 
 async function resolveVanity(vanity) {
